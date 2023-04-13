@@ -5,10 +5,8 @@
 import evdev
 import json
 
-device = evdev.InputDevice('/dev/input/event5')
+device = evdev.InputDevice('/dev/input/event4')
 print(device)
-
-print(evdev.events.KeyEvent.key_up)
 
 teclas = [
     {
@@ -31,12 +29,19 @@ teclas = [
 ]
 
 caps = False
+palabra = ""
 for event in device.read_loop():
-    print(event)
     if event.type == evdev.ecodes.EV_KEY:
-        if event.value == evdev.ecodes.KEY_RIGHTSHIFT:
-            caps = event.value == evdev.events.KeyEvent.key_down
-            print("Mayúsculas: " + caps)
+        if event.code == evdev.ecodes.KEY_LEFTSHIFT or event.code == evdev.ecodes.KEY_RIGHTSHIFT:
+            caps = event.value != evdev.events.KeyEvent.key_up
+            print("Mayúsculas:")
+            print(caps)
+        elif event.value == evdev.events.KeyEvent.key_up:
+            print()
+        elif event.code == evdev.ecodes.KEY_ENTER:
+            print("Palabra: " + palabra)
+            palabra = ""
         else:
             print(teclas[caps][event.code])
+            palabra += teclas[caps][event.code]
 
