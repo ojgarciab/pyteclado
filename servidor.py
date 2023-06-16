@@ -42,13 +42,13 @@ class GetHandler(tornado.web.RequestHandler):
     async def get(self):
         async with websockets.connect('ws://localhost:8888/ws/') as websocket:
             try:
-                message = await asyncio.wait_for(websocket.recv(), timeout=10)
+                message = await asyncio.wait_for(websocket.recv(), timeout=30)
                 try:
                     message = json.loads(message)
-                    palabra = message.get("palabra", message)
-                except json.JSONDecodeError:
-                    palabra = message
-                self.write(palabra)
+                    if 'palabra' in message:
+                        self.write(message["palabra"])
+                except:
+                    pass
             except asyncio.TimeoutError:
                 self.set_status(504)
                 self.write("Gateway Timeout")
