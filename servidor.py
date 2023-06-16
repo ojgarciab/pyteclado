@@ -40,20 +40,42 @@ class WebSocketHandler(tornado.websocket.WebSocketHandler):
 
 class GetHandler(tornado.web.RequestHandler):
     async def get(self):
-        async with websockets.connect('ws://localhost:8888/ws/') as websocket:
+        global almacen
+        if "timestamp" in self.request.arguments:
+            # Obtener el primer valor enviado para "variable"
             try:
-                message = await asyncio.wait_for(websocket.recv(), timeout=30)
+                timestamp = self.get_argument("timestamp") + 0.01
+                print("Obtenido timestamp: " + timestamp)
+                if almacen["timestamp"] > timestamp:
+                    print("Enviamos palabra")
+                    self.write(almacen["palabra"])
+                    return
+            except:
+                pass
+        try:
+            async with websockets.connect('ws://localhost:8888/ws/') as websocket:
                 try:
-                    message = json.loads(message)
-                    if 'palabra' in message:
-                        self.write(message["palabra"])
-                except:
-                    pass
-            except asyncio.TimeoutError:
-                self.set_status(504)
-                self.write("Gateway Timeout")
-            finally:
+                    message = await asyncio.wait_for(websocket.recv(), timeout=10)
+                    print("Recibido (sin timeout): " + message)
+                    try:
+                        message = json.loads(message)
+                        if "palabra" in message:
+                            if "timestamp" in message:
+                                self.write(str(message["timestamp"]) + ";" + message["palabra"])
+                            else:
+                                self.write(message["palabra"])
+                    except Exception as e:
+                        print(e)
+                        #pass
+                except asyncio.TimeoutError:
+                    self.set_status(504)
+                    self.write("Gateway Timeout")
                 await websocket.close()
+        except asyncio.exceptions.TimeoutError:
+            self.set_status(504)
+            self.write("Gateway Timeout")
+        finally:
+            self.finish()
 
 class PostHandler(tornado.web.RequestHandler):
     async def get(self):
@@ -100,15 +122,20 @@ teclas = [
     },
 ]
 
+almacen = {
+    "palabra": "",
+    "timestamp": 0,
+}
 async def broadcast():
     global anterior
+    global almacen
     caps = False
     palabra = ""
     while True:
         await asyncio.sleep(0.001)
-        r, w, x = select.select(dispositivos, [], [], 2)
+        r, w, x = select.select(dispositivos, [], [], 10)
         if len(r) == 0:
-            print("Han pasado 5 segundos")
+            print("Han pasado 10 segundos")
             actualizar()
             await WebSocketHandler.broadcast(WebSocketHandler, json.dumps({"dispositivos": {k: str(v) for k,v in dispositivos.items()}}))
             continue
@@ -124,6 +151,8 @@ async def broadcast():
                         pass
                     elif event.code == evdev.ecodes.KEY_ENTER:
                         print("Palabra: " + palabra)
+                        almacen["timestamp"] = event.timestamp()
+                        almacen["palabra"] = palabra
                         anterior = json.dumps({"palabra": palabra, "timestamp": event.timestamp()})
                         await WebSocketHandler.broadcast(WebSocketHandler, anterior)
                         palabra = ""

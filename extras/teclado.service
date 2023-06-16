@@ -1,0 +1,13 @@
+[Unit]
+Description=Detección de teclado
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/usr/local/src/teclado
+ExecStart=/usr/local/src/teclado/activar.sh
+RestartForceExitStatus=100
+
+[Install]
+WantedBy=multi-user.target
