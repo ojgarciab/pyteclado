@@ -2,18 +2,64 @@
 # -*- coding: utf-8 -*-
 # vim:ts=4:sw=4:softtabstop=4:smarttab:expandtab
 
+import tornado.web
+import tornado.websocket
+import tornado.ioloop
+import asyncio
+import websockets
+
+
 # Gestión del teclado
 import evdev
 import select
 import json
 
-# Servidor websocket
-import asyncio
-import functools
-import os
-import sys
-import time
-import websockets
+class MainHandler(tornado.web.RequestHandler):
+    def get(self):
+        self.render("public/index.html")
+
+class WebSocketHandler(tornado.websocket.WebSocketHandler):
+    clients = set()
+
+    def open(self):
+        print("WebSocket connection opened")
+        WebSocketHandler.clients.add(self)
+
+    async def on_message(self, message):
+        # Maneja el mensaje recibido a través del WebSocket
+        print("Received message: " + message)
+        await WebSocketHandler.broadcast("Received message: " + message)
+
+    async def broadcast(self, message):
+        for client in self.clients:
+            client.write_message(message)
+
+    def on_close(self):
+        print("WebSocket connection closed")
+        WebSocketHandler.clients.remove(self)
+
+class GetHandler(tornado.web.RequestHandler):
+    async def get(self):
+        async with websockets.connect('ws://localhost:8888/ws/') as websocket:
+            try:
+                message = await asyncio.wait_for(websocket.recv(), timeout=10)
+                try:
+                    message = json.loads(message)
+                    palabra = message.get("palabra", message)
+                except json.JSONDecodeError:
+                    palabra = message
+                self.write(palabra)
+            except asyncio.TimeoutError:
+                self.set_status(504)
+                self.write("Gateway Timeout")
+            finally:
+                await websocket.close()
+
+class PostHandler(tornado.web.RequestHandler):
+    async def get(self):
+        #async with websockets.connect('ws://localhost:8888/ws/') as websocket:
+        await WebSocketHandler.broadcast(WebSocketHandler, self.request.query)
+        #    await websocket.finish()
 
 # Dispositivos disponibles (con la tecla ENTER)
 dispositivos = {}
@@ -54,22 +100,6 @@ teclas = [
     },
 ]
 
-
-# El set que contiene los clientes
-CLIENTS = set()
-
-anterior = ""
-
-async def handler(websocket):
-    global anterior
-    CLIENTS.add(websocket)
-    try:
-        await websocket.send(anterior)
-        await websocket.wait_closed()
-    finally:
-        CLIENTS.remove(websocket)
-
-
 async def broadcast():
     global anterior
     caps = False
@@ -80,7 +110,7 @@ async def broadcast():
         if len(r) == 0:
             print("Han pasado 5 segundos")
             actualizar()
-            websockets.broadcast(CLIENTS, json.dumps({"dispositivos": {k: str(v) for k,v in dispositivos.items()}}))
+            await WebSocketHandler.broadcast(WebSocketHandler, json.dumps({"dispositivos": {k: str(v) for k,v in dispositivos.items()}}))
             continue
         for fd in r:
             for event in dispositivos[fd].read():
@@ -94,9 +124,8 @@ async def broadcast():
                         pass
                     elif event.code == evdev.ecodes.KEY_ENTER:
                         print("Palabra: " + palabra)
-                        datos = {}
-                        anterior = json.dumps({"palabra": palabra, "timestamp": event.timestamp(), "datos": datos})
-                        websockets.broadcast(CLIENTS, anterior)
+                        anterior = json.dumps({"palabra": palabra, "timestamp": event.timestamp()})
+                        await WebSocketHandler.broadcast(WebSocketHandler, anterior)
                         palabra = ""
                     else:
                         try:
@@ -105,18 +134,23 @@ async def broadcast():
                         except KeyError:
                             pass
 
-
-async def main():
-    async with websockets.serve(
-        #functools.partial(handler, method=method),
-        handler,
-        "localhost",
-        8765,
-        compression=None,
-        ping_timeout=None,
-    ):
-        await broadcast()
-
+def make_app():
+    websocket_handler = WebSocketHandler
+    return tornado.web.Application([
+        (r'/', MainHandler),
+        (r'/esperar', GetHandler),
+        (r'/enviar', PostHandler),
+        (r'/ws/', websocket_handler),
+        (r'/(.*)', tornado.web.StaticFileHandler, {'path': 'public'}),
+    ], websocket_handler=websocket_handler)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Crea un bucle de eventos asyncio
+    asyncio_loop = asyncio.get_event_loop()
+    # Carga la función broadcast en un Task y ejecútala en paralelo con el bucle de eventos asyncio
+    asyncio_loop.create_task(broadcast())
+
+    app = make_app()
+    app.listen(8888)
+    print("Servidor iniciado en http://localhost:8888")
+    tornado.ioloop.IOLoop.current().start()
