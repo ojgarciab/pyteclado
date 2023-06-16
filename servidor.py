@@ -58,16 +58,20 @@ teclas = [
 # El set que contiene los clientes
 CLIENTS = set()
 
+anterior = ""
 
 async def handler(websocket):
+    global anterior
     CLIENTS.add(websocket)
     try:
+        await websocket.send(anterior)
         await websocket.wait_closed()
     finally:
         CLIENTS.remove(websocket)
 
 
 async def broadcast():
+    global anterior
     caps = False
     palabra = ""
     while True:
@@ -80,16 +84,19 @@ async def broadcast():
             continue
         for fd in r:
             for event in dispositivos[fd].read():
+                print(event)
                 if event.type == evdev.ecodes.EV_KEY:
                     if event.code == evdev.ecodes.KEY_LEFTSHIFT or event.code == evdev.ecodes.KEY_RIGHTSHIFT:
                         caps = event.value != evdev.events.KeyEvent.key_up
                         #print("Mayúsculas:")
                         #print(caps)
                     elif event.value == evdev.events.KeyEvent.key_up:
-                        #print()
+                        pass
                     elif event.code == evdev.ecodes.KEY_ENTER:
                         print("Palabra: " + palabra)
-                        websockets.broadcast(CLIENTS, json.dumps({"palabra": palabra}))
+                        datos = {}
+                        anterior = json.dumps({"palabra": palabra, "timestamp": event.timestamp(), "datos": datos})
+                        websockets.broadcast(CLIENTS, anterior)
                         palabra = ""
                     else:
                         try:
