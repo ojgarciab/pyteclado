@@ -8,13 +8,21 @@ import tornado.ioloop
 import asyncio
 import websockets
 
-
 # Gestión del teclado
 import evdev
 import select
 import json
 
+# Base de datos
+import sqlite3
+
+# Abrimos la base de datos
+con = sqlite3.connect("datos.sqlite")
+cur = con.cursor()
+
 class MainHandler(tornado.web.RequestHandler):
+    def set_extra_headers(self, path):
+        self.set_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
     def get(self):
         self.render("public/index.html")
 
@@ -24,6 +32,17 @@ class WebSocketHandler(tornado.websocket.WebSocketHandler):
     def open(self):
         print("WebSocket connection opened")
         WebSocketHandler.clients.add(self)
+        # Consulta para obtener los 10 últimos valores
+        consulta = "SELECT timestamp,fichaje FROM fichajes ORDER BY timestamp DESC LIMIT 10"
+        cur.execute(consulta)
+        resultados = cur.fetchall()
+        # Imprimir los resultados
+        #for fila in resultados:
+        for i in range(len(resultados)-1, -1, -1):
+            fila = resultados[i]
+            datos = obtener_datos(fila[1], insertar=False)
+            print(datos)
+            self.write_message(json.dumps({"palabra": fila[1], "timestamp": fila[0], "datos": datos}))
 
     async def on_message(self, message):
         # Maneja el mensaje recibido a través del WebSocket
@@ -126,18 +145,66 @@ almacen = {
     "palabra": "",
     "timestamp": 0,
 }
+
+def obtener_datos(palabra, insertar = True, timestamp = 0):
+    datos = {
+        "nombre": "ERROR",
+        "baja": "ERROR",
+        "sexo": "ERROR",
+        "email": "ERROR",
+        "foto": "ERROR",
+    }
+    try:
+        cur.execute(
+            """
+                SELECT nombre, baja, sexo, email, foto
+                FROM alu
+                WHERE upper(?) IN (
+                    upper(codigo||letra),
+                    upper("%"||codigo||letra||"_")
+                )
+            """,
+            (palabra,)
+        )
+        registro = cur.fetchone()
+        cur.fetchall()
+        datos = {
+            "nombre": registro[0],
+            "baja": registro[1],
+            "sexo": registro[2],
+            "email": registro[3],
+            "foto": registro[4],
+        }
+        if insertar:
+            cur.execute(
+                """
+                    INSERT INTO fichajes (timestamp, fichaje)
+                    VALUES (?, upper(?))
+                """,
+                (timestamp, palabra,)
+            )
+            con.commit()
+    except Exception as e:
+        print(e)
+        pass
+    return datos
+
 async def broadcast():
     global anterior
     global almacen
     caps = False
     palabra = ""
+    esperas = 0
     while True:
         await asyncio.sleep(0.001)
-        r, w, x = select.select(dispositivos, [], [], 10)
+        r, w, x = select.select(dispositivos, [], [], 0.1)
         if len(r) == 0:
-            print("Han pasado 10 segundos")
-            actualizar()
-            await WebSocketHandler.broadcast(WebSocketHandler, json.dumps({"dispositivos": {k: str(v) for k,v in dispositivos.items()}}))
+            esperas += 1
+            if esperas > 100:
+                esperas = 0
+                print("Han pasado 10 segundos")
+                actualizar()
+                await WebSocketHandler.broadcast(WebSocketHandler, json.dumps({"dispositivos": {k: str(v) for k,v in dispositivos.items()}}))
             continue
         for fd in r:
             for event in dispositivos[fd].read():
@@ -153,7 +220,8 @@ async def broadcast():
                         print("Palabra: " + palabra)
                         almacen["timestamp"] = event.timestamp()
                         almacen["palabra"] = palabra
-                        anterior = json.dumps({"palabra": palabra, "timestamp": event.timestamp()})
+                        datos = obtener_datos(palabra, timestamp=event.timestamp())
+                        anterior = json.dumps({"palabra": palabra, "timestamp": event.timestamp(), "datos": datos})
                         await WebSocketHandler.broadcast(WebSocketHandler, anterior)
                         palabra = ""
                     else:
@@ -163,6 +231,10 @@ async def broadcast():
                         except KeyError:
                             pass
 
+class NoCacheStaticFileHandler(tornado.web.StaticFileHandler):
+    def set_extra_headers(self, path):
+        self.set_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+
 def make_app():
     websocket_handler = WebSocketHandler
     return tornado.web.Application([
@@ -170,7 +242,7 @@ def make_app():
         (r'/esperar', GetHandler),
         (r'/enviar', PostHandler),
         (r'/ws/', websocket_handler),
-        (r'/(.*)', tornado.web.StaticFileHandler, {'path': 'public'}),
+        (r'/(.*)', NoCacheStaticFileHandler, {'path': 'public'}),
     ], websocket_handler=websocket_handler)
 
 if __name__ == "__main__":
